@@ -442,19 +442,44 @@ fn cli_add_files(args: &[String]) -> anyhow::Result<()> {
             eprintln!("  Staged {} existing files", n);
         }
 
-        // Overlay new / modified files
+        // Overlay new / modified files.
+        // Each entry may be a regular file or a directory.  Directories are
+        // walked recursively so that dragging a folder into file-roller adds
+        // all of its contents at the correct relative paths.
+        let mut overlaid = 0usize;
         for rel_path in new_files {
             let src = base_dir.join(rel_path.replace('\\', "/"));
             let dst = temp_dir.join(rel_path.replace('\\', "/"));
-            if let Some(parent) = dst.parent() {
-                std::fs::create_dir_all(parent)?;
+
+            let meta = std::fs::symlink_metadata(&src)
+                .map_err(|e| anyhow::anyhow!("Cannot stat '{}': {}", src.display(), e))?;
+
+            if meta.is_dir() {
+                // Recursively copy all files under this directory
+                for entry in WalkDir::new(&src).into_iter().filter_map(|e| e.ok()) {
+                    if entry.file_type().is_file() {
+                        let rel = entry.path().strip_prefix(&src).unwrap();
+                        let dst_file = dst.join(rel);
+                        if let Some(parent) = dst_file.parent() {
+                            std::fs::create_dir_all(parent)?;
+                        }
+                        std::fs::copy(entry.path(), &dst_file)?;
+                        overlaid += 1;
+                    }
+                }
+            } else {
+                // Regular file or symlink-to-file
+                if let Some(parent) = dst.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::copy(&src, &dst)
+                    .map(|_| ())
+                    .map_err(|e| anyhow::anyhow!("Failed to stage '{}': {}", rel_path, e))?;
+                overlaid += 1;
             }
-            std::fs::copy(&src, &dst)
-                .map(|_| ())
-                .map_err(|e| anyhow::anyhow!("Failed to stage '{}': {}", rel_path, e))?;
         }
-        if !new_files.is_empty() {
-            eprintln!("  Overlaid {} new/modified files", new_files.len());
+        if overlaid > 0 {
+            eprintln!("  Overlaid {} new/modified files", overlaid);
         }
 
         // Repack staging dir → archive
