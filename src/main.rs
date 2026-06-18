@@ -229,7 +229,10 @@ fn cli_extract_files(args: &[String]) -> anyhow::Result<()> {
             extracted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Ok(())
         })?;
-        eprintln!("{} files extracted", extracted.load(std::sync::atomic::Ordering::Relaxed));
+        eprintln!(
+            "{} files extracted",
+            extracted.load(std::sync::atomic::Ordering::Relaxed)
+        );
         return Ok(());
     }
 
@@ -244,7 +247,10 @@ fn cli_extract_files(args: &[String]) -> anyhow::Result<()> {
         Ok(())
     })?;
 
-    eprintln!("{} files extracted", extracted.load(std::sync::atomic::Ordering::Relaxed));
+    eprintln!(
+        "{} files extracted",
+        extracted.load(std::sync::atomic::Ordering::Relaxed)
+    );
     Ok(())
 }
 
@@ -373,7 +379,11 @@ fn cli_pack(args: &[String]) -> anyhow::Result<()> {
     }
 
     let total = pack_folder_impl(&source_folder, &output_path, game_version)?;
-    eprintln!("Done: {} files packed into {}", total, output_path.display());
+    eprintln!(
+        "Done: {} files packed into {}",
+        total,
+        output_path.display()
+    );
     Ok(())
 }
 
@@ -484,11 +494,7 @@ fn cli_add_files(args: &[String]) -> anyhow::Result<()> {
 
         // Repack staging dir → archive
         let total = pack_folder_impl(&temp_dir, &archive_path, game_version)?;
-        eprintln!(
-            "Done: {} files in '{}'",
-            total,
-            archive_path.display()
-        );
+        eprintln!("Done: {} files in '{}'", total, archive_path.display());
         Ok(())
     })();
 
