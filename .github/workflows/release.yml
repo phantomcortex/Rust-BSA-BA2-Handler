@@ -1,0 +1,85 @@
+name: Release
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-rpm:
+    name: Build RPM (Fedora ${{ matrix.fedora }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        fedora: [ '44' ]
+    container: fedora:${{ matrix.fedora }}
+    steps:
+      - name: Install build tooling
+        run: |
+          dnf install -y \
+            git rust cargo \
+            fontconfig-devel \
+            libxcb-devel \
+            libxkbcommon-devel \
+            wayland-devel \
+            mesa-libGL-devel \
+            dbus-devel \
+            rpm-build rpmdevtools
+
+      - uses: actions/checkout@v4
+
+      - name: Build RPM
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$PWD"
+          VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          COMMIT=$(git rev-parse --short HEAD)
+
+          rpmdev-setuptree
+          git archive --format=tar.gz \
+            --prefix="bsa-ba2-tool-${VERSION}/" \
+            -o "$HOME/rpmbuild/SOURCES/bsa-ba2-tool-${VERSION}.tar.gz" HEAD
+          cp packaging/bsa-ba2-tool.spec "$HOME/rpmbuild/SPECS/"
+          sed -i "s/^Version:.*/Version:        ${VERSION}/" \
+            "$HOME/rpmbuild/SPECS/bsa-ba2-tool.spec"
+          rpmbuild -bb "$HOME/rpmbuild/SPECS/bsa-ba2-tool.spec"
+
+          mkdir -p dist
+          find "$HOME/rpmbuild/RPMS" -name 'bsa-ba2-tool-*.rpm' \
+            ! -name '*debuginfo*' ! -name '*debugsource*' \
+            -exec cp {} dist/ \;
+          ls -l dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpm-fedora-${{ matrix.fedora }}
+          path: dist/*.rpm
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    needs: build-rpm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          COMMIT=$(git rev-parse --short HEAD)
+          TAG="v${VERSION}+${COMMIT}"
+          gh release create "$TAG" dist/*.rpm \
+            --title "bsa-ba2-tool ${VERSION} (${COMMIT})" \
+            --generate-notes \
+            --latest
