@@ -21,7 +21,7 @@ jobs:
       - name: Install build tooling
         run: |
           dnf install -y \
-            git rust cargo \
+            git rust cargo gcc-c++ \
             fontconfig-devel \
             libxcb-devel \
             libxkbcommon-devel \

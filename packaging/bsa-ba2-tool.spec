@@ -9,6 +9,7 @@ Source0:        %{name}-%{version}.tar.gz
 
 BuildRequires:  cargo
 BuildRequires:  rust
+BuildRequires:  gcc-c++
 BuildRequires:  fontconfig-devel
 BuildRequires:  libxcb-devel
 BuildRequires:  libxkbcommon-devel
