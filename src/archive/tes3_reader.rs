@@ -18,10 +18,13 @@ pub fn list_files(bsa_path: &Path) -> Result<Vec<BsaFileEntry>> {
 
     let mut files = Vec::new();
 
-    for (key, _file) in archive.iter() {
+    for (key, file) in archive.iter() {
         let path = String::from_utf8_lossy(key.name().as_bytes()).to_string();
 
-        files.push(BsaFileEntry { path });
+        files.push(BsaFileEntry {
+            path,
+            size: file.as_bytes().len() as u64,
+        });
     }
 
     debug!(

@@ -20,13 +20,16 @@ use walkdir::WalkDir;
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
 
-    // No args (just the binary name) → launch GUI
     if args.len() < 2 {
-        return run_gui();
+        return run_gui(None);
+    }
+
+    if args[1] == "--gui" {
+        let preload = args.get(2).map(PathBuf::from);
+        return run_gui(preload);
     }
 
     // CLI mode
-    // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
@@ -36,6 +39,7 @@ fn main() -> anyhow::Result<()> {
     let command = args[1].as_str();
     match command {
         "unpack" | "extract" => cli_unpack(&args[2..]),
+        "extract-files" => cli_extract_files(&args[2..]),
         "pack" => cli_pack(&args[2..]),
         "list" | "ls" => cli_list(&args[2..]),
         "help" | "--help" | "-h" => {
@@ -50,7 +54,7 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-fn run_gui() -> anyhow::Result<()> {
+fn run_gui(preload: Option<PathBuf>) -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
@@ -59,7 +63,40 @@ fn run_gui() -> anyhow::Result<()> {
 
     let window = MainWindow::new()?;
     let state = Arc::new(Mutex::new(AppState::new()));
-    setup_callbacks(&window, state);
+    setup_callbacks(&window, state.clone());
+
+    if let Some(path) = preload {
+        let mut s = state.lock().unwrap();
+        match s.load_archive(&path) {
+            Ok(()) => {
+                let title = format!(
+                    "{} - BSA/BA2 Tool",
+                    path.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default()
+                );
+                let total = s.total_count();
+                let selected = s.selected_count();
+                let model = s.to_slint_model();
+                drop(s);
+                window.set_window_title(slint::SharedString::from(&title));
+                window.set_pack_mode(false);
+                window.set_tree_nodes(model);
+                window.set_status_text(slint::SharedString::from(format!(
+                    "{} files, {} selected",
+                    total, selected
+                )));
+            }
+            Err(e) => {
+                drop(s);
+                window.set_status_text(slint::SharedString::from(format!(
+                    "Error loading archive: {}",
+                    e
+                )));
+            }
+        }
+    }
+
     window.run()?;
     Ok(())
 }
@@ -69,10 +106,12 @@ fn print_help() {
         "BSA/BA2 Archive Tool
 
 USAGE:
-    bsa-ba2-tool                              Launch GUI
-    bsa-ba2-tool unpack <archive> [output]    Extract archive to folder
-    bsa-ba2-tool pack <folder> <output> <game>  Pack folder into archive
-    bsa-ba2-tool list <archive>               List files in archive
+    bsa-ba2-tool                                        Launch GUI
+    bsa-ba2-tool --gui [archive]                        Launch GUI, optionally pre-loading an archive
+    bsa-ba2-tool unpack <archive> [output]              Extract all files to folder
+    bsa-ba2-tool extract-files <archive> <output> [files...]  Extract specific files
+    bsa-ba2-tool pack <folder> <output> <game>          Pack folder into archive
+    bsa-ba2-tool list <archive>                         List files (outputs SIZE\\tPATH per line)
 
 GAME VERSIONS:"
     );
@@ -99,7 +138,7 @@ fn cli_list(args: &[String]) -> anyhow::Result<()> {
     let files = list_archive_files(archive_path)?;
 
     for entry in &files {
-        println!("{}", entry.path);
+        println!("{}\t{}", entry.size, entry.path);
     }
     eprintln!("{} files", files.len());
     Ok(())
@@ -155,6 +194,51 @@ fn cli_unpack(args: &[String]) -> anyhow::Result<()> {
         total,
         output_folder.display()
     );
+    Ok(())
+}
+
+fn cli_extract_files(args: &[String]) -> anyhow::Result<()> {
+    if args.len() < 2 {
+        eprintln!("Usage: bsa-ba2-tool extract-files <archive> <output-dir> [file1 file2 ...]");
+        std::process::exit(1);
+    }
+
+    let archive_path = PathBuf::from(&args[0]);
+    let output_dir = PathBuf::from(&args[1]);
+    let wanted_files: Vec<String> = args[2..].to_vec();
+
+    std::fs::create_dir_all(&output_dir)?;
+
+    if wanted_files.is_empty() {
+        // No specific files listed — extract everything (same as unpack)
+        let all_files = list_archive_files(&archive_path)?;
+        let file_paths: Vec<String> = all_files.iter().map(|e| e.path.clone()).collect();
+        let extracted = std::sync::atomic::AtomicUsize::new(0);
+        extract_archive_files_batch(&archive_path, &file_paths, |path, data| {
+            let out_path = output_dir.join(path.replace('\\', "/"));
+            if let Some(parent) = out_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&out_path, &data)?;
+            extracted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        })?;
+        eprintln!("{} files extracted", extracted.load(std::sync::atomic::Ordering::Relaxed));
+        return Ok(());
+    }
+
+    let extracted = std::sync::atomic::AtomicUsize::new(0);
+    extract_archive_files_batch(&archive_path, &wanted_files, |path, data| {
+        let out_path = output_dir.join(path.replace('\\', "/"));
+        if let Some(parent) = out_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&out_path, &data)?;
+        extracted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    })?;
+
+    eprintln!("{} files extracted", extracted.load(std::sync::atomic::Ordering::Relaxed));
     Ok(())
 }
 

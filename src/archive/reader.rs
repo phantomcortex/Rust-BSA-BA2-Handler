@@ -13,6 +13,7 @@ use tracing::debug;
 #[derive(Debug, Clone)]
 pub struct BsaFileEntry {
     pub path: String,
+    pub size: u64,
 }
 
 /// List all files in a BSA archive
@@ -25,7 +26,7 @@ pub fn list_files(bsa_path: &Path) -> Result<Vec<BsaFileEntry>> {
     for (dir_key, folder) in archive.iter() {
         let dir_name = String::from_utf8_lossy(dir_key.name().as_bytes());
 
-        for (file_key, _file) in folder.iter() {
+        for (file_key, file) in folder.iter() {
             let file_name = String::from_utf8_lossy(file_key.name().as_bytes());
 
             // Build full path with backslash (BSA convention)
@@ -35,7 +36,10 @@ pub fn list_files(bsa_path: &Path) -> Result<Vec<BsaFileEntry>> {
                 format!("{}\\{}", dir_name, file_name)
             };
 
-            files.push(BsaFileEntry { path: full_path });
+            files.push(BsaFileEntry {
+                path: full_path,
+                size: file.as_bytes().len() as u64,
+            });
         }
     }
 

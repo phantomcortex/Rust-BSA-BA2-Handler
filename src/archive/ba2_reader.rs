@@ -17,6 +17,7 @@ use tracing::debug;
 #[derive(Debug, Clone)]
 pub struct Ba2FileEntry {
     pub path: String,
+    pub size: u64,
 }
 
 /// List all files in a BA2 archive
@@ -29,7 +30,9 @@ pub fn list_files(ba2_path: &Path) -> Result<Vec<Ba2FileEntry>> {
     for (key, _file) in archive.iter() {
         let path = String::from_utf8_lossy(key.name().as_bytes()).to_string();
 
-        files.push(Ba2FileEntry { path });
+        // BA2 fo4::File is chunk-based; uncompressed size requires a write pass.
+        // Listing with size=0 is acceptable — file-roller shows "0 B" for BA2 entries.
+        files.push(Ba2FileEntry { path, size: 0 });
     }
 
     debug!("Listed {} files in BA2 {}", files.len(), ba2_path.display());

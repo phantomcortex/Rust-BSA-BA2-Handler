@@ -87,6 +87,7 @@ pub fn detect_format(path: &Path) -> Option<ArchiveFormat> {
 #[derive(Debug, Clone)]
 pub struct ArchiveFileEntry {
     pub path: String,
+    pub size: u64,
 }
 
 /// List files from any Bethesda archive (TES3 BSA, TES4 BSA, or BA2)
@@ -96,21 +97,21 @@ pub fn list_archive_files(archive_path: &Path) -> Result<Vec<ArchiveFileEntry>> 
             let files = list_tes3_files(archive_path)?;
             Ok(files
                 .into_iter()
-                .map(|f| ArchiveFileEntry { path: f.path })
+                .map(|f| ArchiveFileEntry { path: f.path, size: f.size })
                 .collect())
         }
         Some(ArchiveFormat::Bsa) => {
             let files = list_files(archive_path)?;
             Ok(files
                 .into_iter()
-                .map(|f| ArchiveFileEntry { path: f.path })
+                .map(|f| ArchiveFileEntry { path: f.path, size: f.size })
                 .collect())
         }
         Some(ArchiveFormat::Ba2) => {
             let files = list_ba2_files(archive_path)?;
             Ok(files
                 .into_iter()
-                .map(|f| ArchiveFileEntry { path: f.path })
+                .map(|f| ArchiveFileEntry { path: f.path, size: f.size })
                 .collect())
         }
         None => bail!("Unknown archive format: {}", archive_path.display()),
