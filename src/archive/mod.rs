@@ -29,13 +29,13 @@ pub use ba2_reader::{
 };
 pub use ba2_writer::{Ba2Builder, Ba2CompressionFormat, Ba2Format, Ba2Version};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use ba2::tes4::{ArchiveFlags, ArchiveTypes, Version};
 use ba2::{guess_format, FileFormat, Reader};
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::BufReader;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tracing::debug;
 
 /// Archive format type
@@ -357,7 +357,22 @@ impl GameVersion {
 pub fn detect_game_version(archive_path: &Path) -> Option<GameVersion> {
     match detect_format(archive_path) {
         Some(ArchiveFormat::Tes3Bsa) => Some(GameVersion::Morrowind),
-        Some(ArchiveFormat::Ba2) => Some(GameVersion::Fallout4Fo76), // Default to FO4/FO76
+        Some(ArchiveFormat::Ba2) => {
+            let result: Result<(ba2::fo4::Archive, ba2::fo4::ArchiveOptions), _> =
+                ba2::fo4::Archive::read(archive_path);
+            if let Ok((_, options)) = result {
+                let version = match options.version() {
+                    ba2::fo4::Version::v1 => GameVersion::Fallout4Fo76,
+                    ba2::fo4::Version::v2 => GameVersion::StarfieldV2,
+                    ba2::fo4::Version::v3 => GameVersion::StarfieldV3,
+                    ba2::fo4::Version::v7 => GameVersion::Fallout4NGv7,
+                    ba2::fo4::Version::v8 => GameVersion::Fallout4NGv8,
+                };
+                Some(version)
+            } else {
+                Some(GameVersion::Fallout4Fo76)
+            }
+        }
         Some(ArchiveFormat::Bsa) => {
             // Try to detect version from BSA header
             let result: Result<(ba2::tes4::Archive, ba2::tes4::ArchiveOptions), _> =
@@ -410,6 +425,32 @@ pub fn detect_types(name: &str) -> ArchiveTypes {
     } else {
         ArchiveTypes::MISC
     }
+}
+
+/// Extract all files from any Bethesda archive into a directory, recreating the path structure.
+/// Returns the number of files extracted.
+pub fn unpack_archive_to(archive_path: &Path, output_dir: &Path) -> Result<usize> {
+    let files = list_archive_files(archive_path)
+        .with_context(|| format!("Failed to list archive: {}", archive_path.display()))?;
+    let total = files.len();
+
+    std::fs::create_dir_all(output_dir)
+        .with_context(|| format!("Failed to create output dir: {}", output_dir.display()))?;
+
+    let file_paths: Vec<String> = files.into_iter().map(|e| e.path).collect();
+    let out_dir: PathBuf = output_dir.to_path_buf();
+
+    extract_archive_files_batch(archive_path, &file_paths, move |path, data| {
+        let out_path = out_dir.join(path.replace('\\', "/"));
+        if let Some(parent) = out_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&out_path, &data)
+            .with_context(|| format!("Failed to write: {}", out_path.display()))?;
+        Ok(())
+    })?;
+
+    Ok(total)
 }
 
 /// Detect BSA version from archive name

@@ -7,7 +7,8 @@ mod archive;
 mod gui;
 
 use archive::{
-    extract_archive_files_batch, list_archive_files, Ba2Builder, Ba2Format, BsaBuilder, GameVersion,
+    detect_game_version, extract_archive_files_batch, list_archive_files, unpack_archive_to,
+    Ba2Builder, Ba2Format, BsaBuilder, GameVersion,
 };
 use gui::state::{setup_callbacks, AppState};
 use gui::MainWindow;
@@ -41,6 +42,7 @@ fn main() -> anyhow::Result<()> {
         "unpack" | "extract" => cli_unpack(&args[2..]),
         "extract-files" => cli_extract_files(&args[2..]),
         "pack" => cli_pack(&args[2..]),
+        "add-files" => cli_add_files(&args[2..]),
         "list" | "ls" => cli_list(&args[2..]),
         "help" | "--help" | "-h" => {
             print_help();
@@ -106,12 +108,13 @@ fn print_help() {
         "BSA/BA2 Archive Tool
 
 USAGE:
-    bsa-ba2-tool                                        Launch GUI
-    bsa-ba2-tool --gui [archive]                        Launch GUI, optionally pre-loading an archive
-    bsa-ba2-tool unpack <archive> [output]              Extract all files to folder
+    bsa-ba2-tool                                              Launch GUI
+    bsa-ba2-tool --gui [archive]                              Launch GUI, optionally pre-loading an archive
+    bsa-ba2-tool unpack <archive> [output]                    Extract all files to folder
     bsa-ba2-tool extract-files <archive> <output> [files...]  Extract specific files
-    bsa-ba2-tool pack <folder> <output> <game>          Pack folder into archive
-    bsa-ba2-tool list <archive>                         List files (outputs SIZE\\tPATH per line)
+    bsa-ba2-tool pack <folder> <output> <game>                Pack folder into archive (create)
+    bsa-ba2-tool add-files <archive> <game|auto> <base> [files...]  Add/overwrite files (patch)
+    bsa-ba2-tool list <archive>                               List files (outputs SIZE\\tPATH per line)
 
 GAME VERSIONS:"
     );
@@ -139,6 +142,9 @@ fn cli_list(args: &[String]) -> anyhow::Result<()> {
 
     for entry in &files {
         println!("{}\t{}", entry.size, entry.path);
+    }
+    if let Some(game) = detect_game_version(archive_path) {
+        eprintln!("Game: {}", game.cli_name());
     }
     eprintln!("{} files", files.len());
     Ok(())
@@ -242,39 +248,20 @@ fn cli_extract_files(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cli_pack(args: &[String]) -> anyhow::Result<()> {
-    if args.len() < 3 {
-        eprintln!("Usage: bsa-ba2-tool pack <folder> <output> <game>");
-        eprintln!("Run 'bsa-ba2-tool help' for game version list");
-        std::process::exit(1);
-    }
-
-    let source_folder = PathBuf::from(&args[0]);
-    let output_path = PathBuf::from(&args[1]);
-    let game_version = match GameVersion::from_cli_name(&args[2]) {
-        Some(v) => v,
-        None => {
-            eprintln!("Unknown game version: {}", args[2]);
-            eprintln!("Valid options:");
-            for v in GameVersion::all() {
-                eprintln!("  {:<14} {}", v.cli_name(), v.display_name());
-            }
-            std::process::exit(1);
-        }
-    };
-
-    if game_version.is_tes3() {
-        anyhow::bail!("Morrowind TES3 BSA writing is not supported");
-    }
-
-    // Collect files
+/// Core pack logic: walk source_folder, build archive at output_path with game_version.
+/// Returns the number of files packed.
+fn pack_folder_impl(
+    source_folder: &Path,
+    output_path: &Path,
+    game_version: GameVersion,
+) -> anyhow::Result<usize> {
     let mut file_paths: Vec<String> = Vec::new();
-    for entry in WalkDir::new(&source_folder)
+    for entry in WalkDir::new(source_folder)
         .into_iter()
         .filter_map(|e| e.ok())
     {
         if entry.file_type().is_file() {
-            if let Ok(rel) = entry.path().strip_prefix(&source_folder) {
+            if let Ok(rel) = entry.path().strip_prefix(source_folder) {
                 file_paths.push(rel.to_string_lossy().to_string());
             }
         }
@@ -323,14 +310,13 @@ fn cli_pack(args: &[String]) -> anyhow::Result<()> {
         eprintln!();
 
         eprintln!("  Building archive...");
-        builder.build_with_progress(&output_path, |current, btotal, _| {
+        builder.build_with_progress(output_path, |current, btotal, _| {
             if current % 100 == 0 || current == btotal {
                 eprint!("\r  Compressing: {}/{}", current, btotal);
             }
         })?;
         eprintln!();
     } else {
-        // BSA
         let bsa_version = game_version.bsa_version().unwrap();
         let compress = game_version.supports_compression();
 
@@ -350,7 +336,7 @@ fn cli_pack(args: &[String]) -> anyhow::Result<()> {
         eprintln!();
 
         eprintln!("  Building archive...");
-        builder.build_with_progress(&output_path, |current, btotal, _| {
+        builder.build_with_progress(output_path, |current, btotal, _| {
             if current % 100 == 0 || current == btotal {
                 eprint!("\r  Compressing: {}/{}", current, btotal);
             }
@@ -358,10 +344,131 @@ fn cli_pack(args: &[String]) -> anyhow::Result<()> {
         eprintln!();
     }
 
-    eprintln!(
-        "Done: {} files packed into {}",
-        total,
-        output_path.display()
-    );
+    Ok(total)
+}
+
+fn cli_pack(args: &[String]) -> anyhow::Result<()> {
+    if args.len() < 3 {
+        eprintln!("Usage: bsa-ba2-tool pack <folder> <output> <game>");
+        eprintln!("Run 'bsa-ba2-tool help' for game version list");
+        std::process::exit(1);
+    }
+
+    let source_folder = PathBuf::from(&args[0]);
+    let output_path = PathBuf::from(&args[1]);
+    let game_version = match GameVersion::from_cli_name(&args[2]) {
+        Some(v) => v,
+        None => {
+            eprintln!("Unknown game version: {}", args[2]);
+            eprintln!("Valid options:");
+            for v in GameVersion::all() {
+                eprintln!("  {:<14} {}", v.cli_name(), v.display_name());
+            }
+            std::process::exit(1);
+        }
+    };
+
+    if game_version.is_tes3() {
+        anyhow::bail!("Morrowind TES3 BSA writing is not supported");
+    }
+
+    let total = pack_folder_impl(&source_folder, &output_path, game_version)?;
+    eprintln!("Done: {} files packed into {}", total, output_path.display());
     Ok(())
+}
+
+fn cli_add_files(args: &[String]) -> anyhow::Result<()> {
+    if args.len() < 3 {
+        eprintln!("Usage: bsa-ba2-tool add-files <archive> <game|auto> <base-dir> [rel-file ...]");
+        eprintln!("  game|auto  'auto' detects from existing archive; or specify a game name");
+        eprintln!("  base-dir   directory from which rel-file paths are resolved");
+        eprintln!("  rel-file   paths relative to base-dir to add or overwrite");
+        eprintln!("Run 'bsa-ba2-tool help' for game version list");
+        std::process::exit(1);
+    }
+
+    let archive_path = PathBuf::from(&args[0]);
+    let game_str = &args[1];
+    let base_dir = PathBuf::from(&args[2]);
+    let new_files = &args[3..];
+
+    let game_version = if game_str.eq_ignore_ascii_case("auto") {
+        if !archive_path.exists() {
+            anyhow::bail!(
+                "Cannot auto-detect game version: '{}' does not exist. Specify a game name explicitly.",
+                archive_path.display()
+            );
+        }
+        detect_game_version(&archive_path).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Could not detect game version from '{}'",
+                archive_path.display()
+            )
+        })?
+    } else {
+        match GameVersion::from_cli_name(game_str) {
+            Some(v) => v,
+            None => {
+                eprintln!("Unknown game version: {}", game_str);
+                eprintln!("Valid options:");
+                for v in GameVersion::all() {
+                    eprintln!("  {:<14} {}", v.cli_name(), v.display_name());
+                }
+                std::process::exit(1);
+            }
+        }
+    };
+
+    if game_version.is_tes3() {
+        anyhow::bail!("Morrowind TES3 BSA writing is not supported");
+    }
+
+    // Create temp staging directory
+    let temp_dir = std::env::temp_dir().join(format!(
+        "bsa-add-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos()
+    ));
+    std::fs::create_dir_all(&temp_dir)?;
+
+    let result = (|| -> anyhow::Result<()> {
+        // Unpack existing archive into staging if it exists
+        if archive_path.exists() {
+            eprintln!("Staging existing archive contents...");
+            let n = unpack_archive_to(&archive_path, &temp_dir)?;
+            eprintln!("  Staged {} existing files", n);
+        }
+
+        // Overlay new / modified files
+        for rel_path in new_files {
+            let src = base_dir.join(rel_path.replace('\\', "/"));
+            let dst = temp_dir.join(rel_path.replace('\\', "/"));
+            if let Some(parent) = dst.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(&src, &dst)
+                .map(|_| ())
+                .map_err(|e| anyhow::anyhow!("Failed to stage '{}': {}", rel_path, e))?;
+        }
+        if !new_files.is_empty() {
+            eprintln!("  Overlaid {} new/modified files", new_files.len());
+        }
+
+        // Repack staging dir → archive
+        let total = pack_folder_impl(&temp_dir, &archive_path, game_version)?;
+        eprintln!(
+            "Done: {} files in '{}'",
+            total,
+            archive_path.display()
+        );
+        Ok(())
+    })();
+
+    // Always clean up the staging directory
+    let _ = std::fs::remove_dir_all(&temp_dir);
+
+    result
 }
